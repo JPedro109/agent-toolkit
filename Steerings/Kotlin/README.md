@@ -6,50 +6,71 @@ Forneça estes documentos como contexto a agentes de IA antes de gerar ou revisa
 
 ---
 
+## Estrutura
+
+```text
+Kotlin/
+├── general/       # Convenções gerais (arquitetura, código, cache) + teste geral
+├── application/   # Camada Application: convenção + teste
+├── domain/        # Camada Domain: convenção + teste
+├── external/      # Camada External: convenção + testes (persistence, gateway, security)
+└── presentation/  # Camada Presentation: convenção + testes (controller, scheduler)
+```
+
+---
+
 ## Documentos disponíveis
 
-### Gerais
+### general/
 
 | Documento | Conteúdo |
 |-----------|----------|
-| [`convention-architecture.md`](./convention-architecture.md) | Princípios arquiteturais, estrutura de pastas (`core/`, `configuration/`, `shared/`), fluxo de dependências e de dados, responsabilidades de cada camada. |
-| [`convention-code.md`](./convention-code.md) | Nomenclatura, constantes, formatação em blocos lógicos, ordenação de membros, injeção de dependência, logging, configurações tipadas, imports e análise estática. |
-| [`convention-cache.md`](./convention-cache.md) | Convenções de cache. |
+| [`general/convention-architecture.md`](./general/convention-architecture.md) | Princípios arquiteturais, estrutura de pastas (`core/`, `configuration/`, `shared/`), fluxo de dependências e de dados, responsabilidades de cada camada. |
+| [`general/convention-code.md`](./general/convention-code.md) | Nomenclatura, constantes, formatação em blocos lógicos, ordenação de membros, injeção de dependência, logging, configurações tipadas, imports e análise estática. |
+| [`general/convention-test-general.md`](./general/convention-test-general.md) | Layout, fixtures, padrão AAA, `@DisplayName`, AssertJ, Testcontainers, WireMock. |
 
-### Por camada
+### application/
 
-| Documento | Camada / Escopo |
-|-----------|-----------------|
-| [`convention-layer-domain.md`](./convention-layer-domain.md) | **Domain** — entidades, value objects, `Result<T>`, validações e exceções de negócio. Independente de frameworks. |
-| [`convention-layer-application.md`](./convention-layer-application.md) | **Application** — casos de uso, orquestração e definição de contratos (portas). |
-| [`convention-layer-external.md`](./convention-layer-external.md) | **External** — princípios transversais dos adaptadores de infraestrutura. |
-| [`convention-layer-external-persistence.md`](./convention-layer-external-persistence.md) | Detalhes de persistência (DAO, Repository, Mapper, Model) dentro da External. |
-| [`convention-layer-external-gateway.md`](./convention-layer-external-gateway.md) | Integração HTTP com outras aplicações (Feign Client + Resilience4j) dentro da External. |
-| [`convention-layer-external-security.md`](./convention-layer-external-security.md) | Segurança dentro da camada External. |
-| [`convention-layer-presentation.md`](./convention-layer-presentation.md) | **Presentation** — princípios transversais de acesso à aplicação. |
-| [`convention-layer-presentation-controller.md`](./convention-layer-presentation-controller.md) | Acesso HTTP: controllers, payloads, Global Exception Handler e OpenAPI. |
-| [`convention-layer-presentation-scheduler.md`](./convention-layer-presentation-scheduler.md) | Acesso via Scheduler com `@Scheduled` e ShedLock. |
+| Documento | Conteúdo |
+|-----------|----------|
+| [`application/convention-layer-application.md`](./application/convention-layer-application.md) | **Application** — casos de uso, orquestração e definição de contratos (portas). |
+| [`application/convention-test-layer-application.md`](./application/convention-test-layer-application.md) | Testes da camada Application. |
 
-### De teste
+### domain/
 
-| Documento | Escopo |
-|-----------|--------|
-| [`convention-test-general.md`](./convention-test-general.md) | Layout, fixtures, padrão AAA, `@DisplayName`, AssertJ, Testcontainers, WireMock. |
-| [`convention-test-layer-domain.md`](./convention-test-layer-domain.md) | Testes da camada Domain. |
-| [`convention-test-layer-application.md`](./convention-test-layer-application.md) | Testes da camada Application. |
-| [`convention-test-layer-external.md`](./convention-test-layer-external.md) | Testes da camada External. |
-| [`convention-test-layer-external-persistence.md`](./convention-test-layer-external-persistence.md) | Testes de persistência. |
-| [`convention-test-layer-external-gateway.md`](./convention-test-layer-external-gateway.md) | Testes de Gateway HTTP (adaptador Feign). |
-| [`convention-test-layer-presentation-controller.md`](./convention-test-layer-presentation-controller.md) | Testes de Controller (`@WebMvcTest` / integração). |
-| [`convention-test-layer-presentation-scheduler.md`](./convention-test-layer-presentation-scheduler.md) | Testes de Scheduler, unitários e sem contexto Spring. |
+| Documento | Conteúdo |
+|-----------|----------|
+| [`domain/convention-layer-domain.md`](./domain/convention-layer-domain.md) | **Domain** — entidades, value objects, `Result<T>`, validações e exceções de negócio. Independente de frameworks. |
+| [`domain/convention-test-layer-domain.md`](./domain/convention-test-layer-domain.md) | Testes da camada Domain. |
+
+### external/
+
+| Documento | Conteúdo |
+|-----------|----------|
+| [`external/convention-layer-external.md`](./external/convention-layer-external.md) | **External** — princípios transversais dos adaptadores de infraestrutura. |
+| [`external/convention-layer-external-persistence.md`](./external/convention-layer-external-persistence.md) | Detalhes de persistência (DAO, Repository, Mapper, Model). |
+| [`external/convention-layer-external-gateway.md`](./external/convention-layer-external-gateway.md) | Integração HTTP com outras aplicações (Feign Client + Resilience4j). |
+| [`external/convention-layer-external-cache.md`](./external/convention-layer-external-cache.md) | Cache (Caffeine / Redis): onde aplicar, invalidação, serialização e configuração. |
+| [`external/convention-layer-external-security.md`](./external/convention-layer-external-security.md) | Segurança dentro da camada External. |
+| [`external/convention-test-layer-external.md`](./external/convention-test-layer-external.md) | Testes da camada External. |
+| [`external/convention-test-layer-external-persistence.md`](./external/convention-test-layer-external-persistence.md) | Testes de persistência. |
+| [`external/convention-test-layer-external-gateway.md`](./external/convention-test-layer-external-gateway.md) | Testes de Gateway HTTP (adaptador Feign). |
+
+### presentation/
+
+| Documento | Conteúdo |
+|-----------|----------|
+| [`presentation/convention-layer-presentation.md`](./presentation/convention-layer-presentation.md) | **Presentation** — princípios transversais de acesso à aplicação. |
+| [`presentation/convention-layer-presentation-controller.md`](./presentation/convention-layer-presentation-controller.md) | Acesso HTTP: controllers, payloads, Global Exception Handler e OpenAPI. |
+| [`presentation/convention-layer-presentation-scheduler.md`](./presentation/convention-layer-presentation-scheduler.md) | Acesso via Scheduler com `@Scheduled` e ShedLock. |
+| [`presentation/convention-test-layer-presentation-controller.md`](./presentation/convention-test-layer-presentation-controller.md) | Testes de Controller (`@WebMvcTest` / integração). |
+| [`presentation/convention-test-layer-presentation-scheduler.md`](./presentation/convention-test-layer-presentation-scheduler.md) | Testes de Scheduler, unitários e sem contexto Spring. |
 
 ---
 
 ## Diferenças em relação ao Java
 
-Kotlin possui um documento adicional por linguagem:
-
-- O pacote `shared/` (funções de extensão e tipos utilitários) está documentado em `convention-architecture.md`.
+- O pacote `shared/` (funções de extensão e tipos utilitários) está documentado em `general/convention-architecture.md`.
 - Contratos (interfaces) existem para inverter dependências entre camadas. Componentes de implementação única, como casos de uso, são utilizados diretamente, sem interface — o Kotlin favorece funções de extensão e data classes sobre hierarquias de interface desnecessárias.
 
 ---
@@ -72,10 +93,17 @@ External      →  Application  →  Domain
 
 | Tarefa | Documentos recomendados |
 |--------|------------------------|
-| Implementar entidade | `convention-architecture.md` + `convention-layer-domain.md` |
-| Implementar caso de uso | `convention-layer-application.md` |
-| Implementar controller | `convention-layer-presentation.md` + `convention-layer-presentation-controller.md` |
-| Implementar persistência | `convention-layer-external.md` + `convention-layer-external-persistence.md` |
-| Implementar gateway HTTP | `convention-layer-external.md` + `convention-layer-external-gateway.md` |
-| Escrever testes | `convention-test-general.md` + documento de teste da camada |
+| Implementar entidade | `general/convention-architecture.md` + `domain/convention-layer-domain.md` |
+| Testar entidade / domínio | `general/convention-test-general.md` + `domain/convention-test-layer-domain.md` |
+| Implementar caso de uso | `application/convention-layer-application.md` |
+| Testar caso de uso | `general/convention-test-general.md` + `application/convention-test-layer-application.md` |
+| Implementar controller | `presentation/convention-layer-presentation.md` + `presentation/convention-layer-presentation-controller.md` |
+| Testar controller | `general/convention-test-general.md` + `presentation/convention-test-layer-presentation-controller.md` |
+| Implementar scheduler | `presentation/convention-layer-presentation.md` + `presentation/convention-layer-presentation-scheduler.md` |
+| Testar scheduler | `general/convention-test-general.md` + `presentation/convention-test-layer-presentation-scheduler.md` |
+| Implementar persistência | `external/convention-layer-external.md` + `external/convention-layer-external-persistence.md` |
+| Testar persistência | `general/convention-test-general.md` + `external/convention-test-layer-external-persistence.md` |
+| Implementar gateway HTTP | `external/convention-layer-external.md` + `external/convention-layer-external-gateway.md` |
+| Testar gateway HTTP | `general/convention-test-general.md` + `external/convention-test-layer-external-gateway.md` |
+| Implementar cache | `external/convention-layer-external-cache.md` |
 | Revisão geral | Conjunto completo |
