@@ -23,7 +23,7 @@ Os componentes cobertos por esta convenção são:
 
 # Convenções Idiomáticas do Java
 
-As seguintes convenções de estilo se aplicam em toda esta convenção:
+Estas são as diferenças de estilo aplicadas em toda esta convenção, em relação à versão Kotlin:
 
 - **DTOs e propriedades** usam `record`, obtendo imutabilidade, construtor canônico, `equals`/`hashCode`/`toString` automáticos.
 - **Constantes e logger** são `private static final`; o logger é `private static final Logger` no topo da classe.
@@ -215,20 +215,26 @@ As seguintes regras devem ser respeitadas:
 ```java
 public interface Token {
 
-    String generateAccessToken(String sub);
+    String generateAccessToken(String sub, List<String> roles);
 
     String generateRefreshToken(String sub);
 
     DecodeTokenDto validateAccessToken(String token);
 
     DecodeTokenDto validateRefreshToken(String token);
+
+    void revokeAccessToken(String jti);
+
+    void revokeRefreshToken(String tokenHash);
 }
 ```
 
 ```java
-public record DecodeTokenDto(String sub) {
+public record DecodeTokenDto(String jti, String sub, List<String> roles) {
 }
 ```
+
+> O `jti` (JWT ID) é necessário para suportar a blocklist de revogação imediata do access token. As `roles` são necessárias para que o `JwtAuthenticationFilter` possa popular as authorities no `SecurityContextHolder`. Ambos os campos devem ser extraídos pelo `TokenAdapter` e nunca expostos como tipos da biblioteca.
 
 ### ❌ Incorreto — vazamento de tipo da biblioteca na porta
 
@@ -305,7 +311,12 @@ As seguintes regras devem ser respeitadas:
 
 - Deve residir em `external/security/`, implementar a porta `Token` e ser registrado como `@Component`.
 - Deve receber a configuração via `SecurityConfigProperties` injetada no construtor, nunca via `@Value`.
+- O access token deve incluir um claim `jti` (JWT ID) gerado com `UUID.randomUUID()`. O `jti` é a identidade do token e é a chave usada para revogação na blocklist.
+- O access token deve incluir um claim `roles` com a lista de papéis recebida via parâmetro.
 - O valor textual do `TokenType` (`type.getValue()`) é o que deve ser gravado e lido do claim do token; o adaptador converte de volta via `TokenType.fromValue`.
+- A validação do access token deve, após verificar a assinatura e o tipo, consultar a blocklist para garantir que o `jti` não foi revogado. Um `jti` presente na blocklist deve resultar em `InvalidTokenException`.
+- `revokeAccessToken(String jti)` persiste o `jti` na blocklist com TTL igual à validade restante do token, de forma a não acumular entradas expiradas.
+- `revokeRefreshToken(String tokenHash)` persiste a revogação no repositório de refresh tokens. Se o token já estiver marcado como revogado, lança `RevokedTokenException` — sinal de reutilização que deve provocar revogação de toda a sessão no caso de uso.
 - Toda exceção proveniente da biblioteca de JWT deve ser capturada em `try/catch` e traduzida para `InvalidTokenException` antes de atravessar a fronteira da camada External. A camada de negócio nunca deve conhecer exceções da biblioteca.
 - A exceção original da biblioteca deve ser registrada em log (nível `WARN`) no ponto da tradução, nunca em outra camada. Nunca registrar o token, o segredo ou qualquer dado sensível.
 - A chave de assinatura e demais recursos custosos devem ser derivados uma única vez, no construtor, e guardados em campo `final`, nunca recriados a cada chamada.
@@ -320,23 +331,71 @@ public class TokenAdapter implements Token {
     private static final Logger logger = LoggerFactory.getLogger(TokenAdapter.class);
 
     private static final String CLAIM_TOKEN_TYPE = "token_type";
+    private static final String CLAIM_JTI        = "jti";
+    private static final String CLAIM_ROLES      = "roles";
 
     private final SecurityConfigProperties properties;
     private final SecretKey signingKey;
+    private final TokenBlocklistRepository blocklistRepository;
+    private final RefreshTokenRepository revokedRefreshTokenRepository;
 
-    public TokenAdapter(SecurityConfigProperties properties) {
-        this.properties = properties;
-        this.signingKey = Keys.hmacShaKeyFor(properties.jwt().secret().getBytes(StandardCharsets.UTF_8));
+    public TokenAdapter(
+            SecurityConfigProperties properties,
+            TokenBlocklistRepository blocklistRepository,
+            RefreshTokenRepository revokedRefreshTokenRepository) {
+        this.properties    = properties;
+        this.signingKey    = Keys.hmacShaKeyFor(properties.jwt().secret().getBytes(StandardCharsets.UTF_8));
+        this.blocklistRepository     = blocklistRepository;
+        this.revokedRefreshTokenRepository = revokedRefreshTokenRepository;
     }
 
     @Override
-    public String generateAccessToken(String sub) {
-        return buildToken(sub, TokenType.ACCESS, properties.jwt().accessTokenExpirationMs());
+    public String generateAccessToken(String sub, List<String> roles) {
+        var jti = UUID.randomUUID().toString();
+        return Jwts.builder()
+                .subject(sub)
+                .claim(CLAIM_TOKEN_TYPE, TokenType.ACCESS.getValue())
+                .claim(CLAIM_JTI, jti)
+                .claim(CLAIM_ROLES, roles)
+                .issuedAt(new Date())
+                .expiration(new Date(System.currentTimeMillis() + properties.jwt().accessTokenExpirationMs()))
+                .signWith(signingKey)
+                .compact();
+    }
+
+    @Override
+    public String generateRefreshToken(String sub) {
+        return buildToken(sub, TokenType.REFRESH, properties.jwt().refreshTokenExpirationMs());
     }
 
     @Override
     public DecodeTokenDto validateAccessToken(String token) {
-        return validateToken(token, TokenType.ACCESS);
+        var decoded = validateToken(token, TokenType.ACCESS);
+        if (blocklistRepository.contains(decoded.jti())) {
+            throw new InvalidTokenException();
+        }
+        return decoded;
+    }
+
+    @Override
+    public DecodeTokenDto validateRefreshToken(String token) {
+        return validateToken(token, TokenType.REFRESH);
+    }
+
+    @Override
+    public void revokeAccessToken(String jti) {
+        blocklistRepository.add(jti, properties.jwt().accessTokenExpirationMs(), TimeUnit.MILLISECONDS);
+    }
+
+    @Transactional
+    @Override
+    public void revokeRefreshToken(String tokenHash) {
+        var alreadyRevoked = revokedRefreshTokenRepository.getByTokenHash(tokenHash);
+        if (alreadyRevoked) {
+            throw new RevokedTokenException();
+        }
+
+        revokedRefreshTokenRepository.add(tokenHash);
     }
 
     private DecodeTokenDto validateToken(String token, TokenType expectedType) {
@@ -344,24 +403,45 @@ public class TokenAdapter implements Token {
             Claims claims = parseClaims(token);
 
             TokenType tokenType = TokenType.fromValue(claims.get(CLAIM_TOKEN_TYPE, String.class));
-
             if (tokenType != expectedType) {
                 throw new InvalidTokenException();
             }
 
-            return new DecodeTokenDto(claims.getSubject());
-        } catch (InvalidTokenException ex) {
+            String jti  = claims.get(CLAIM_JTI, String.class);
+            String sub  = claims.getSubject();
+
+            List<String> roles = (List<String>) claims.getOrDefault(CLAIM_ROLES, List.of());
+
+            return new DecodeTokenDto(jti, sub, roles);
+        } catch (InvalidTokenException | RevokedTokenException ex) {
             throw ex;
         } catch (Exception ex) {
             logger.warn("Invalid JWT token: {}", ex.getMessage());
-
             throw new InvalidTokenException();
         }
+    }
+
+    private Claims parseClaims(String token) {
+        return Jwts.parser()
+                .verifyWith(signingKey)
+                .build()
+                .parseSignedClaims(token)
+                .getPayload();
+    }
+
+    private String buildToken(String sub, TokenType type, long expirationMs) {
+        return Jwts.builder()
+                .subject(sub)
+                .claim(CLAIM_TOKEN_TYPE, type.getValue())
+                .issuedAt(new Date())
+                .expiration(new Date(System.currentTimeMillis() + expirationMs))
+                .signWith(signingKey)
+                .compact();
     }
 }
 ```
 
-> Observação: o `catch (InvalidTokenException ex)` precede o `catch (Exception ex)` para que a exceção de tipo incorreto — já da aplicação — propague sem ser logada novamente como falha da biblioteca.
+> O `catch (InvalidTokenException | RevokedTokenException ex)` precede o `catch (Exception ex)` para que exceções já da aplicação propagadas (tipo incorreto, reutilização) não sejam relançadas como falha genérica da biblioteca.
 
 ### ❌ Incorreto — exceção da biblioteca vazando para o negócio
 
@@ -401,7 +481,7 @@ As seguintes regras devem ser respeitadas:
 - Deve ler o token do header `Authorization` apenas quando o prefixo `Bearer ` estiver presente; o comprimento do prefixo deve ser uma constante `private static final`.
 - A validação do token deve ser envolvida em `try/catch` — um token inválido **não** deve lançar exceção nem bloquear a cadeia. O filtro apenas deixa de autenticar e segue, delegando a resposta `401` ao `authenticationEntryPoint` do `SecurityConfig`.
 - Em caso de token válido, deve construir um `UsernamePasswordAuthenticationToken` com o `sub` como principal e registrá-lo no `SecurityContextHolder`.
-- O terceiro argumento do `UsernamePasswordAuthenticationToken` são as authorities do usuário. Enquanto a autorização usar apenas `authenticated()`, `List.of()` basta; ao adotar `hasRole`/`hasAuthority`, essa lista **precisa** ser populada (ver [Pré-requisito: popular as authorities na autenticação](#pré-requisito-popular-as-authorities-na-autenticação)).
+- As roles retornadas pelo `DecodeTokenDto` devem ser convertidas em `GrantedAuthority` com o prefixo `ROLE_` e passadas como terceiro argumento do `UsernamePasswordAuthenticationToken`. Isso habilita o uso de `hasRole`/`hasAnyRole` nas regras de autorização. Se o projeto adotar o modelo de autoridades granulares em vez de papéis, omita o prefixo e use `hasAuthority`/`hasAnyAuthority` — escolha um modelo e mantenha-o em todo o projeto (ver [Pré-requisito: popular as authorities na autenticação](#pré-requisito-popular-as-authorities-na-autenticação)).
 - Nunca deve registrar o token ou qualquer dado sensível em log.
 - Não deve conter regra de negócio nem decidir autorização — apenas estabelece quem é o usuário autenticado.
 
@@ -433,10 +513,14 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             try {
                 DecodeTokenDto decoded = token.validateAccessToken(jwt);
 
+                List<GrantedAuthority> authorities = decoded.roles().stream()
+                        .map(role -> new SimpleGrantedAuthority("ROLE_" + role))
+                        .collect(Collectors.toList());
+
                 var authentication = new UsernamePasswordAuthenticationToken(
                         decoded.sub(),
                         null,
-                        List.of());
+                        authorities);
 
                 authentication.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
 
@@ -491,10 +575,12 @@ Toda falha de segurança relevante para o negócio deve ser representada por uma
 
 As seguintes regras devem ser respeitadas:
 
-- A `InvalidTokenException` reside em `application/port/security/exception/`, junto do contrato que a lança.
-- Estende `RuntimeException` diretamente e carrega uma mensagem fixa, conforme a convenção da camada Application.
-- É a única exceção que o negócio conhece a respeito de tokens — expiração, assinatura inválida, tipo incorreto e formato inválido convergem todos para ela.
-- O registro em log dessa exceção segue a convenção de código: a tradução loga no ponto da tradução (`TokenAdapter`), e demais logs de exceção ficam a cargo do Global Exception Handler.
+- As exceções de token residem em `application/port/security/exception/`, junto do contrato que as lança.
+- Cada exceção estende `RuntimeException` diretamente e carrega uma mensagem fixa, conforme a convenção da camada Application.
+- São definidas **duas** exceções distintas, pois têm semânticas diferentes para os casos de uso:
+  - `InvalidTokenException` — token malformado, assinatura inválida, expirado, tipo incorreto ou presente na blocklist. O caso de uso responde com `401 Unauthorized`.
+  - `RevokedTokenException` — refresh token detectado como já utilizado (reutilização de token consumido). O caso de uso deve revogar toda a sessão do usuário antes de responder com `401 Unauthorized`. **Nunca** trate esta exceção da mesma forma que `InvalidTokenException` sem revogar a sessão.
+- O registro em log segue a convenção de código: a tradução loga no ponto da tradução (`TokenAdapter`), e demais logs de exceção ficam a cargo do Global Exception Handler.
 
 ### ✔ Correto
 
@@ -503,6 +589,15 @@ public class InvalidTokenException extends RuntimeException {
 
     public InvalidTokenException() {
         super("Invalid or expired token");
+    }
+}
+```
+
+```java
+public class RevokedTokenException extends RuntimeException {
+
+    public RevokedTokenException() {
+        super("Token has already been used");
     }
 }
 ```
@@ -611,6 +706,7 @@ As seguintes regras devem ser respeitadas:
 - As regras devem ser declaradas da mais específica para a mais genérica, sempre encerrando com `anyRequest()`.
 - `anyRequest().authenticated()` (ou mais restritivo) deve ser sempre a última regra; nenhum endpoint pode ficar liberado por omissão.
 - `permitAll()` deve ser usado apenas em endpoints genuinamente públicos (login, refresh, criação de usuário, documentação, actuator), sempre de forma explícita.
+- O endpoint de logout (`POST /auth/logout`) deve ser `authenticated()`, não `permitAll()`. Um access token expirado que impeça o logout é tratado pelo cliente via refresh antes de chamar o logout. Isso evita que qualquer pessoa tente revogar tokens de sessões alheias sem autenticação.
 - `authenticated()` exige apenas um usuário autenticado, sem papel específico.
 - `hasRole("ADMIN")` / `hasAnyRole("ADMIN", "MANAGER")` exigem um papel. O Spring adiciona o prefixo `ROLE_` automaticamente — declare o papel **sem** o prefixo (`"ADMIN"`, não `"ROLE_ADMIN"`).
 - `hasAuthority("task:read")` / `hasAnyAuthority(...)` exigem uma autoridade literal, **sem** prefixo automático. Não misture `hasRole` e `hasAuthority` para expressar o mesmo conceito; escolha um modelo (papéis ou autoridades) e mantenha-o em todo o projeto.
@@ -629,6 +725,8 @@ As seguintes regras devem ser respeitadas:
         .requestMatchers("/docs", "/swagger-ui.html", "/swagger-ui/**", "/v3/api-docs/**").permitAll()
         // denyAll — rota desativada, bloqueada para todos
         .requestMatchers("/api/v1/internal/**").denyAll()
+        // authenticated — logout exige token válido (access token expirado deve ser renovado antes)
+        .requestMatchers(HttpMethod.POST, "/api/v1/auth/logout").authenticated()
         // hasRole — um único papel (sem o prefixo ROLE_)
         .requestMatchers(HttpMethod.DELETE, "/api/v1/users/**").hasRole("ADMIN")
         // hasAnyRole — qualquer um dos papéis
@@ -744,14 +842,14 @@ Autenticação:
 - `SecurityConfig` usa `@Configuration` + `@EnableWebSecurity`, sessão `STATELESS`, endpoints públicos explícitos e `anyRequest().authenticated()` como fecho.
 - `SecurityConfigProperties` é um `record` com `@ConfigurationProperties(prefix = "security")`, sufixo `ConfigProperties`, subgrupo `jwt` como `record` aninhado e valores por variável de ambiente.
 - O segredo JWT tem no mínimo 32 caracteres e nunca é versionado com valor real.
-- A porta `Token` expressa comportamento de negócio e retorna `DecodeTokenDto` (um `record`), nunca tipos da biblioteca.
+- A porta `Token` expressa comportamento de negócio e retorna `DecodeTokenDto` (um `record` com `jti`, `sub` e `roles`), nunca tipos da biblioteca. Inclui métodos de revogação (`revokeAccessToken` por JTI e `revokeRefreshToken` por hash).
 - `TokenType` é um enum cujo `value` textual trafega no token, com conversão centralizada (`fromValue`) que lança `InvalidTokenException` para valores desconhecidos.
-- `TokenAdapter` implementa `Token` como `@Component`, recebe `SecurityConfigProperties` por construtor, deriva a chave uma única vez no construtor e traduz toda exceção da biblioteca para `InvalidTokenException` via `try/catch`.
-- `JwtAuthenticationFilter` estende `OncePerRequestFilter`, depende apenas da porta `Token`, popula o `SecurityContextHolder` quando o token é válido e, quando inválido, segue a cadeia sem bloquear, delegando o `401` ao `authenticationEntryPoint`.
-- `InvalidTokenException` estende `RuntimeException`, carrega mensagem fixa e é a única exceção de token conhecida pelo negócio.
+- `TokenAdapter` implementa `Token` como `@Component`, recebe `SecurityConfigProperties` por construtor, deriva a chave uma única vez no construtor, inclui `jti` e `roles` no access token, verifica a blocklist durante `validateAccessToken`, e traduz toda exceção da biblioteca para `InvalidTokenException` via `try/catch`. Lança `RevokedTokenException` quando um refresh token já consumido é reutilizado.
+- `JwtAuthenticationFilter` estende `OncePerRequestFilter`, depende apenas da porta `Token`, popula o `SecurityContextHolder` com as authorities convertidas das roles (`ROLE_` + role), e quando o token é inválido segue a cadeia sem bloquear, delegando o `401` ao `authenticationEntryPoint`.
+- São definidas duas exceções de token: `InvalidTokenException` (token inválido, expirado ou bloqueado — responder com `401`) e `RevokedTokenException` (reutilização de refresh token — revogar toda a sessão antes de responder com `401`). Ambas estendem `RuntimeException`, carregam mensagem fixa e residem em `application/port/security/exception/`.
 - Nenhum dado sensível (token, segredo, senha) deve ser registrado em log.
 
 Autorização:
 
-- A autorização de endpoints é declarada em `authorizeHttpRequests`, da regra mais específica para a mais genérica, encerrando com `anyRequest()` como fecho deny-by-default; `permitAll()` é sempre explícito e `hasRole` é declarado sem o prefixo `ROLE_`.
+- A autorização de endpoints é declarada em `authorizeHttpRequests`, da regra mais específica para a mais genérica, encerrando com `anyRequest()` como fecho deny-by-default; `permitAll()` é sempre explícito, `hasRole` é declarado sem o prefixo `ROLE_`, e o endpoint de logout é `authenticated()`.
 - A segurança por método (`@PreAuthorize` + `@EnableMethodSecurity`) é adotada apenas quando a rota não expressa a regra, e nunca carrega regra de negócio (propriedade de recurso pertence ao caso de uso).
