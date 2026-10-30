@@ -1,10 +1,6 @@
----
-inclusion: manual
----
-
 # Convenções de Segurança (Java)
 
-Esta é a versão **Java** das convenções de segurança. Os princípios arquiteturais são idênticos aos da versão Kotlin (`convention-security.md`); o que muda são as formas idiomáticas da linguagem: `record` para DTOs e propriedades, enums com construtor, `private static final` para constantes e logger, injeção por construtor com campos `final` e tratamento de exceção com `try/catch`.
+Esta convenção descreve as regras de segurança para projetos **Java** com Spring Security.
 
 A **segurança** é um detalhe de infraestrutura responsável por autenticar requisições, autorizar o acesso aos recursos e emitir/validar os tokens que sustentam a sessão sem estado (stateless) da aplicação.
 
@@ -27,7 +23,7 @@ Os componentes cobertos por esta convenção são:
 
 # Convenções Idiomáticas do Java
 
-Estas são as diferenças de estilo aplicadas em toda esta convenção, em relação à versão Kotlin:
+As seguintes convenções de estilo se aplicam em toda esta convenção:
 
 - **DTOs e propriedades** usam `record`, obtendo imutabilidade, construtor canônico, `equals`/`hashCode`/`toString` automáticos.
 - **Constantes e logger** são `private static final`; o logger é `private static final Logger` no topo da classe.
